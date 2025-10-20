@@ -29,8 +29,10 @@ const uint8_t CHANNELS[] = {
 	CHAN4,
 };
 
+portMUX_TYPE port_spin_lock = portMUX_INITIALIZER_UNLOCKED;
+
 // When changing this, also change in headers of metadata
-const int NUM_OF_SAMPLES = 7168;
+#define NUM_OF_SAMPLES 7168
 
 uint8_t trigger_mask = 0;
 uint8_t triggers = 0;
@@ -40,25 +42,29 @@ void reset_trigger() {
 	triggers = 0;
 }
 
-void sample_and_send() {
-	uint8_t *buffer = malloc(NUM_OF_SAMPLES);
+uint8_t buffer[NUM_OF_SAMPLES];
 
+void sample_and_send() {
+	taskENTER_CRITICAL(&port_spin_lock);
 	for (int sample_num = 0; sample_num < NUM_OF_SAMPLES; sample_num++) {
 		// RESET CURRENT VALUE IN BUFFER IF ANY
 		buffer[sample_num] = 0;
 
+		uint8_t channels = 0;
+
 		for(uint8_t channel_num = 0; channel_num < NUM_OF_CHANNELS; channel_num++) {
-			uint8_t current_channel = gpio_get_level(CHANNELS[channel_num]) << channel_num;
-			buffer[sample_num] |= current_channel;
+			channels |= gpio_get_level(CHANNELS[channel_num]) << channel_num;
 		}
 
+		buffer[sample_num] = channels;
+
+		// TODO: Calculate the number of cycles to wait here instead of blocking for faster sampling
 		wait_us_blocking(1);
 	}
+	taskEXIT_CRITICAL(&port_spin_lock);
 
 	uart_write_bytes(UART_NUM_2, buffer, NUM_OF_SAMPLES);
 	uart_wait_tx_idle_polling(UART_NUM_2);
-
-	free(buffer);
 
 	ESP_LOGI("CAPTURE SENT", "NOW");
 }
@@ -72,14 +78,25 @@ uint8_t get_current_pins_state() {
 	return state;
 }
 
+void reset_send_buffer() {
+	for (int sample_num = 0; sample_num < NUM_OF_SAMPLES; sample_num++) {
+		buffer[sample_num] = 0;
+	}
+}
+
 void arm_trigger() {
+	reset_send_buffer();
 	if(trigger_mask) {
 		ESP_LOGI("START CAPTURE", "TRIGGERED");
-		// WAIT FOR TRIGGERS --> TODO: Find out how to make the watchdog not upset here.
+		// WAIT FOR TRIGGERS --> TODO: Handle cancellation or max timeout better.
 		int timeout = 0;
 		while((triggers ^ get_current_pins_state()) & trigger_mask){
 			timeout++;
-			if(timeout > 10000000) {
+			if(timeout % 1000000 == 0) {
+				// NOTE: Only way I found to yield and reset watchdog
+				vTaskDelay(1);
+			}
+			if(timeout > 1000000000) {
 				ESP_LOGI("TIMEOUT", "TRIGGERED");
 				break;
 			}
@@ -182,9 +199,20 @@ void handle_command(uint8_t cmd) {
     }
 }
 
+void respond_to_command_task (void *args) {
+	while (1) {
+		uint8_t buf[1];
+		buf[0] = 0xFF;
+
+		uart_read_bytes(UART_NUM_2, buf, 1, 100);
+		
+		handle_command(buf[0]);
+	}
+}
+
 void app_main(void)
 {
-	uart_driver_install(UART_NUM_2, NUM_OF_SAMPLES, 0, 0, NULL, 0);
+	uart_driver_install(UART_NUM_2, 256, 0, 0, NULL, 0);
 
 	const uart_port_t uart_num = UART_NUM_2;
 	uart_config_t uart_config = {
@@ -211,13 +239,13 @@ void app_main(void)
 		gpio_set_direction(CHANNELS[i], GPIO_MODE_INPUT);
 	}
 
-	while (1) {
-		uint8_t buf[1];
-		buf[0] = 0xFF;
+	gpio_set_direction(2, GPIO_MODE_INPUT_OUTPUT);
 
-		uart_read_bytes(UART_NUM_2, buf, 1, 100);
-		
-		handle_command(buf[0]);
+	xTaskCreatePinnedToCore(respond_to_command_task, "RESPOND_TO_COMMAND", 12000, NULL, 2, NULL, 1);
+
+	while (1) {
+		vTaskDelay(100);
+		gpio_set_level(27, 0);
 	}
 }
 
