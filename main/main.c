@@ -6,8 +6,10 @@
 #include "esp_err.h"
 #include "freertos/idf_additions.h"
 #include "hal/gpio_types.h"
+#include "soc/gpio_reg.h"
 #include "hal/uart_types.h"
 #include "esp_timer.h"
+#include "soc/soc.h"
 
 void wait_us_blocking(uint32_t micros_to_wait) {
     uint64_t micros_now_plus_delay = esp_timer_get_time() + micros_to_wait;
@@ -44,19 +46,16 @@ void reset_trigger() {
 
 uint8_t buffer[NUM_OF_SAMPLES];
 
+uint8_t get_channels_current_value() {
+	uint8_t res = REG_READ(GPIO_IN_REG) >> 18;
+	return res;
+}
+
 void sample_and_send() {
 	taskENTER_CRITICAL(&port_spin_lock);
 	for (int sample_num = 0; sample_num < NUM_OF_SAMPLES; sample_num++) {
 		// RESET CURRENT VALUE IN BUFFER IF ANY
-		buffer[sample_num] = 0;
-
-		uint8_t channels = 0;
-
-		for(uint8_t channel_num = 0; channel_num < NUM_OF_CHANNELS; channel_num++) {
-			channels |= gpio_get_level(CHANNELS[channel_num]) << channel_num;
-		}
-
-		buffer[sample_num] = channels;
+		buffer[sample_num] = get_channels_current_value();
 
 		// TODO: Calculate the number of cycles to wait here instead of blocking for faster sampling
 		wait_us_blocking(1);
@@ -67,15 +66,6 @@ void sample_and_send() {
 	uart_wait_tx_idle_polling(UART_NUM_2);
 
 	ESP_LOGI("CAPTURE SENT", "NOW");
-}
-
-uint8_t get_current_pins_state() {
-	uint8_t state = 0;
-	for(uint8_t channel_num = 0; channel_num < NUM_OF_CHANNELS; channel_num++) {
-		state |= (gpio_get_level(CHANNELS[channel_num]) << channel_num);
-	}
-
-	return state;
 }
 
 void reset_send_buffer() {
@@ -90,7 +80,7 @@ void arm_trigger() {
 		ESP_LOGI("START CAPTURE", "TRIGGERED");
 		// WAIT FOR TRIGGERS --> TODO: Handle cancellation or max timeout better.
 		int timeout = 0;
-		while((triggers ^ get_current_pins_state()) & trigger_mask){
+		while(((triggers ^ get_channels_current_value()) & 0xFF) & trigger_mask){
 			timeout++;
 			if(timeout % 1000000 == 0) {
 				// NOTE: Only way I found to yield and reset watchdog
