@@ -34,7 +34,8 @@ const uint8_t CHANNELS[] = {
 portMUX_TYPE port_spin_lock = portMUX_INITIALIZER_UNLOCKED;
 
 // When changing this, also change in headers of metadata
-#define NUM_OF_SAMPLES 7168
+// #define NUM_OF_SAMPLES 7168
+#define NUM_OF_SAMPLES 65536
 
 uint8_t trigger_mask = 0;
 uint8_t triggers = 0;
@@ -119,7 +120,7 @@ void send_metadata() {
 		 // Firmware version
 		0x02, '0', '.', '1', '7', 0x00,
 		// sample memory (1024 bytes)
-		0x21, 0x00, 0x00, 0x1C, 0x00, 
+		0x21, 0x00, 0x01, 0x00, 0x00, 
 		// sample rate (TODO)
 		0x23, 0x00, 0x3D, 0x09, 0x00, 
 		// Num channels
